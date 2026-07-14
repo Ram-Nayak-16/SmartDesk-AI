@@ -3,8 +3,8 @@
 SmartDesk AI is a premium, secure, local-first productivity dashboard and AI assistant. Designed to operate completely offline or under restricted network conditions, it leverages Small Language Models (SLMs) running locally via Ollama, integrates an in-memory client-side RAG engine, and features a sleek glassmorphic user interface.
 
 ## 🌐 Live Demonstration
-* **Production Build (GitHub Pages)**: [https://saurabhsingh8586.github.io/SmartDesk-AI/](https://saurabhsingh8586.github.io/SmartDesk-AI/)
 * **Alternative Build (Surge)**: [http://smartdesk-ai-local-7462.surge.sh/](http://smartdesk-ai-local-7462.surge.sh/)
+
 
 ---
 
