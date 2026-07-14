@@ -74,6 +74,7 @@ export function chunkDocument(docName, content, chunkSize = 400, overlap = 100) 
 
 /**
  * Simple TF-IDF Vector Search Engine for browser-side retrieval.
+ * Optimized with an Inverted Index to restrict similarity search to matching candidates.
  */
 export class LocalVectorSearch {
   constructor() {
@@ -81,6 +82,7 @@ export class LocalVectorSearch {
     this.docCount = 0;
     this.df = {};     // Document frequency of terms
     this.idf = {};    // Inverse document frequency of terms
+    this.invertedIndex = {}; // Inverted index: term -> array of chunk indices
   }
 
   /**
@@ -91,10 +93,11 @@ export class LocalVectorSearch {
     this.docCount = 0;
     this.df = {};
     this.idf = {};
+    this.invertedIndex = {};
   }
 
   /**
-   * Indexes a collection of chunks. Re-calculates DF/IDF.
+   * Indexes a collection of chunks. Re-calculates DF/IDF and populates inverted index.
    */
   indexChunks(allChunks) {
     this.clear();
@@ -103,11 +106,18 @@ export class LocalVectorSearch {
 
     if (this.docCount === 0) return;
 
-    // Calculate document frequencies (DF)
-    allChunks.forEach(chunk => {
-      const tokens = new Set(tokenize(chunk.text));
-      tokens.forEach(token => {
+    // Calculate document frequencies (DF) and populate inverted index
+    allChunks.forEach((chunk, index) => {
+      const tokens = tokenize(chunk.text);
+      const uniqueTokens = new Set(tokens);
+      
+      uniqueTokens.forEach(token => {
         this.df[token] = (this.df[token] || 0) + 1;
+        
+        if (!this.invertedIndex[token]) {
+          this.invertedIndex[token] = [];
+        }
+        this.invertedIndex[token].push(index);
       });
     });
 
@@ -127,13 +137,26 @@ export class LocalVectorSearch {
     const queryTokens = tokenize(query);
     if (queryTokens.length === 0) return [];
 
+    // Retrieve only chunk indices that contain query terms via Inverted Index
+    const candidateIndices = new Set();
+    queryTokens.forEach(token => {
+      const matchIndices = this.invertedIndex[token];
+      if (matchIndices) {
+        matchIndices.forEach(idx => candidateIndices.add(idx));
+      }
+    });
+
+    if (candidateIndices.size === 0) return [];
+
     // Calculate query term weights (simple term frequency in query)
     const queryWeights = {};
     queryTokens.forEach(token => {
       queryWeights[token] = (queryWeights[token] || 0) + 1;
     });
 
-    const results = this.chunks.map(chunk => {
+    // Calculate scores only for candidate chunks
+    const results = Array.from(candidateIndices).map(chunkIdx => {
+      const chunk = this.chunks[chunkIdx];
       const chunkTokens = tokenize(chunk.text);
       const chunkTf = {};
       chunkTokens.forEach(token => {
@@ -194,3 +217,4 @@ export class LocalVectorSearch {
       }));
   }
 }
+

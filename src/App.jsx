@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { OllamaService } from './utils/ollama';
 import { chunkDocument, LocalVectorSearch } from './utils/rag';
+import { extractTextFromPdf } from './utils/pdfParser';
 import confetti from 'canvas-confetti';
 
 // Initial state helpers
@@ -76,6 +77,15 @@ export default function App() {
   const [ragSearchQuery, setRagSearchQuery] = useState('');
   const [ragSearchResults, setRagSearchResults] = useState([]);
   const [latestRetrievedChunks, setLatestRetrievedChunks] = useState([]);
+  const [isParsingFiles, setIsParsingFiles] = useState(false);
+  const [parsingProgress, setParsingProgress] = useState('');
+
+  // SLM Performance Optimizations
+  const [numThread, setNumThread] = useState(() => parseInt(localStorage.getItem('smartdesk-num-thread')) || 4);
+  const [numCtx, setNumCtx] = useState(() => parseInt(localStorage.getItem('smartdesk-num-ctx')) || 2048);
+  const [useMlock, setUseMlock] = useState(() => localStorage.getItem('smartdesk-use-mlock') === 'true');
+  const [f16Kv, setF16Kv] = useState(() => localStorage.getItem('smartdesk-f16-kv') !== 'false'); // default true
+  const [ragMaxChunks, setRagMaxChunks] = useState(() => parseInt(localStorage.getItem('smartdesk-rag-max-chunks')) || 2);
 
   // Notes States
   const [notes, setNotes] = useState(INITIAL_NOTES);
@@ -203,15 +213,50 @@ export default function App() {
   };
 
   // Handle Document Upload (RAG)
-  const handleFileUpload = (e) => {
+  const handleFileUpload = async (e) => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
 
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const content = event.target.result;
-        
+    setIsParsingFiles(true);
+
+    for (const file of files) {
+      try {
+        setParsingProgress(`Ingesting ${file.name}...`);
+        let content = '';
+
+        if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
+          // Parse PDF locally
+          content = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+              try {
+                const arrayBuffer = event.target.result;
+                const text = await extractTextFromPdf(arrayBuffer, (current, total) => {
+                  setParsingProgress(`Parsing PDF "${file.name}": Page ${current}/${total}`);
+                });
+                resolve(text);
+              } catch (err) {
+                reject(err);
+              }
+            };
+            reader.onerror = (err) => reject(err);
+            reader.readAsArrayBuffer(file);
+          });
+        } else {
+          // Parse as plain text
+          content = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (event) => resolve(event.target.result);
+            reader.onerror = (err) => reject(err);
+            reader.readAsText(file);
+          });
+        }
+
+        if (!content || !content.trim()) {
+          showToast(`Skipped empty file: "${file.name}"`, "warning");
+          continue;
+        }
+
         // Chunk document
         const chunks = chunkDocument(file.name, content);
         const newDoc = {
@@ -222,10 +267,9 @@ export default function App() {
           chunks: chunks
         };
 
-        // Add to state
+        // Add to state and re-index
         setDocuments(prev => {
           const updated = [...prev.filter(d => d.name !== file.name), newDoc];
-          // Re-index all chunks in RAG engine
           const allChunks = updated.flatMap(d => d.chunks);
           vectorSearchRef.current.indexChunks(allChunks);
           return updated;
@@ -239,13 +283,54 @@ export default function App() {
           colors: ['#8a2be2', '#06b6d4', '#10b981']
         });
 
-        showToast(`Indexed "${file.name}" into RAG. Created ${chunks.length} context chunks.`, "success");
-      };
-      reader.readAsText(file);
-    });
+        showToast(`Indexed "${file.name}" into RAG. Created ${chunks.length} chunks.`, "success");
+      } catch (error) {
+        console.error("Error processing file", file.name, error);
+        showToast(`Error parsing "${file.name}": ${error.message || error}`, "error");
+      }
+    }
 
+    setIsParsingFiles(false);
+    setParsingProgress('');
     // Reset input
     e.target.value = null;
+  };
+
+  // Index Desk notes into RAG
+  const handleIndexNotesToRag = () => {
+    if (notes.length === 0) {
+      showToast("No notes to index.", "warning");
+      return;
+    }
+
+    const docName = "clipboard-notes.txt";
+    const content = notes
+      .map((note, index) => `Note #${index + 1} (Created: ${note.createdAt}):\n${note.text}`)
+      .join('\n\n');
+
+    const chunks = chunkDocument(docName, content);
+    const newDoc = {
+      name: docName,
+      size: `${Math.round(new Blob([content]).size / 1024 * 10) / 10} KB`,
+      chunksCount: chunks.length,
+      content: content,
+      chunks: chunks
+    };
+
+    setDocuments(prev => {
+      const updated = [...prev.filter(d => d.name !== docName), newDoc];
+      const allChunks = updated.flatMap(d => d.chunks);
+      vectorSearchRef.current.indexChunks(allChunks);
+      return updated;
+    });
+
+    confetti({
+      particleCount: 60,
+      spread: 40,
+      colors: ['#06b6d4', '#10b981']
+    });
+
+    showToast(`Successfully indexed all ${notes.length} notes into RAG!`, "success");
   };
 
   // Remove RAG document
@@ -285,7 +370,7 @@ export default function App() {
     let retrievalPromptPrefix = '';
     let retrievedChunks = [];
     if (ragEnabled && documents.length > 0) {
-      retrievedChunks = vectorSearchRef.current.search(textToSubmit, 3);
+      retrievedChunks = vectorSearchRef.current.search(textToSubmit, ragMaxChunks);
       if (retrievedChunks.length > 0) {
         setLatestRetrievedChunks(retrievedChunks);
         retrievalPromptPrefix = `Use the following retrieved local documents context to answer the user request. Mention sources if relevant.\n\n=== CONTEXT ===\n${retrievedChunks.map(c => `[Source: ${c.documentName}] ${c.text}`).join('\n\n')}\n===============\n\n`;
@@ -325,6 +410,12 @@ export default function App() {
       messages: messagesHistory,
       systemPrompt: systemPrompt,
       temperature: temperature,
+      options: {
+        num_thread: numThread,
+        num_ctx: numCtx,
+        use_mlock: useMlock,
+        f16_kv: f16Kv
+      },
       isSandbox: isSandboxMode,
       onChunk: (chunk) => {
         chatResponseAccumulatorRef.current += chunk;
@@ -780,11 +871,36 @@ export default function App() {
 
             {/* Right Card: Quick Desk Notes */}
             <section className="dashboard-card glass-panel">
-              <header className="card-header">
-                <h3 className="card-title">
+              <header className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 className="card-title" style={{ margin: 0 }}>
                   <FileText className="card-icon" size={18} />
                   Desk Clipboard Notes
                 </h3>
+                {notes.length > 0 && (
+                  <button 
+                    type="button" 
+                    className="card-header-action-btn"
+                    onClick={handleIndexNotesToRag}
+                    title="Index Notes to Local RAG"
+                    style={{
+                      background: 'rgba(138, 43, 226, 0.15)',
+                      border: '1px solid rgba(138, 43, 226, 0.3)',
+                      color: 'var(--text-main)',
+                      padding: '5px 10px',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      fontWeight: 600
+                    }}
+                  >
+                    <Database size={12} />
+                    Sync to RAG
+                  </button>
+                )}
               </header>
 
               <form onSubmit={handleAddNote} className="note-input-wrapper">
@@ -1050,6 +1166,116 @@ export default function App() {
                 </div>
               </div>
 
+              {/* SLM Turbo Optimization Settings */}
+              <div className="dashboard-card glass-panel" style={{ padding: '20px', marginTop: '16px' }}>
+                <h4 style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <Sparkles size={16} color="var(--accent-cyan)" />
+                  SLM Turbo Optimizers
+                </h4>
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '14px' }}>
+                  Tune local system bindings to accelerate token generation.
+                </p>
+
+                <div className="config-group" style={{ marginBottom: '12px' }}>
+                  <label style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>CPU Inference Threads</span>
+                    <span className="slider-val" style={{ color: 'var(--accent-cyan)', fontSize: '11px', fontWeight: 600 }}>{numThread} Cores</span>
+                  </label>
+                  <div className="slider-wrapper">
+                    <input 
+                      type="range" 
+                      min="1" 
+                      max="16" 
+                      step="1"
+                      className="range-slider"
+                      value={numThread}
+                      onChange={(e) => {
+                        setNumThread(parseInt(e.target.value));
+                        localStorage.setItem('smartdesk-num-thread', e.target.value);
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="config-group" style={{ marginBottom: '12px' }}>
+                  <label>Max Context Length (Tokens)</label>
+                  <select 
+                    className="config-select" 
+                    value={numCtx}
+                    onChange={(e) => {
+                      setNumCtx(parseInt(e.target.value));
+                      localStorage.setItem('smartdesk-num-ctx', e.target.value);
+                    }}
+                  >
+                    <option value="1024">1024 (Turbo Speed)</option>
+                    <option value="2048">2048 (Balanced)</option>
+                    <option value="4096">4096 (Deep Scope)</option>
+                    <option value="8192">8192 (Max Size)</option>
+                  </select>
+                </div>
+
+                <div className="config-group" style={{ marginBottom: '12px' }}>
+                  <label style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Max RAG Context Chunks</span>
+                    <span className="slider-val" style={{ color: 'var(--accent-emerald)', fontSize: '11px', fontWeight: 600 }}>{ragMaxChunks} Chunks</span>
+                  </label>
+                  <div className="slider-wrapper">
+                    <input 
+                      type="range" 
+                      min="1" 
+                      max="5" 
+                      step="1"
+                      className="range-slider"
+                      value={ragMaxChunks}
+                      onChange={(e) => {
+                        setRagMaxChunks(parseInt(e.target.value));
+                        localStorage.setItem('smartdesk-rag-max-chunks', e.target.value);
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '14px', paddingTop: '10px', borderTop: '1px solid var(--border-glass)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600 }}>Pin Model in RAM</span>
+                      <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Prevents swapping to disk</span>
+                    </div>
+                    <label className="rag-toggle-switch">
+                      <input 
+                        type="checkbox" 
+                        className="switch-input"
+                        checked={useMlock}
+                        onChange={(e) => {
+                          setUseMlock(e.target.checked);
+                          localStorage.setItem('smartdesk-use-mlock', e.target.checked);
+                        }}
+                      />
+                      <span className="switch-slider"></span>
+                    </label>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600 }}>Float16 KV Cache</span>
+                      <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>Speeds up attention layers</span>
+                    </div>
+                    <label className="rag-toggle-switch">
+                      <input 
+                        type="checkbox" 
+                        className="switch-input"
+                        checked={f16Kv}
+                        onChange={(e) => {
+                          setF16Kv(e.target.checked);
+                          localStorage.setItem('smartdesk-f16-kv', e.target.checked);
+                        }}
+                      />
+                      <span className="switch-slider"></span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
             </div>
 
           </div>
@@ -1071,17 +1297,28 @@ export default function App() {
                 Drop files below. Contents are split and stored solely in memory for private RAG context retrieval.
               </p>
 
-              <label className="rag-dropzone">
+              <label className={`rag-dropzone ${isParsingFiles ? 'disabled' : ''}`} style={{ cursor: isParsingFiles ? 'not-allowed' : 'pointer' }}>
                 <input 
                   type="file" 
                   multiple 
-                  accept=".txt,.md,.json,.js,.py,.css" 
+                  accept=".txt,.md,.json,.js,.py,.css,.pdf" 
                   style={{ display: 'none' }} 
                   onChange={handleFileUpload}
+                  disabled={isParsingFiles}
                 />
-                <FilePlus2 className="dropzone-icon" size={36} />
-                <h3>Click or drag workspace files here</h3>
-                <p>Accepts .txt, .md, .json, .py, etc. (Max 5MB per file)</p>
+                {isParsingFiles ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+                    <RefreshCw className="dropzone-icon animate-spin" size={36} color="var(--accent-color)" />
+                    <h3>{parsingProgress}</h3>
+                    <p style={{ color: 'var(--text-muted)' }}>Parsing and indexing content client-side...</p>
+                  </div>
+                ) : (
+                  <>
+                    <FilePlus2 className="dropzone-icon" size={36} />
+                    <h3>Click or drag workspace files here</h3>
+                    <p>Accepts .pdf, .txt, .md, .json, .py, etc. (Max 5MB per file)</p>
+                  </>
+                )}
               </label>
 
               <div>

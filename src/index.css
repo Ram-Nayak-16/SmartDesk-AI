@@ -66,12 +66,37 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
-  background-image: 
-    radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 40%),
-    radial-gradient(circle at 90% 80%, rgba(236, 72, 153, 0.04) 0%, transparent 40%),
-    radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.95) 100%);
+  background-image: radial-gradient(circle at 50% 50%, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.95) 100%);
   background-attachment: fixed;
   min-height: 100vh;
+  position: relative;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: 
+    radial-gradient(circle at 20% 30%, hsla(var(--accent-hue), 85%, 62%, 0.12) 0%, transparent 50%) 0% 0% / 140% 140% no-repeat,
+    radial-gradient(circle at 80% 70%, rgba(6, 182, 212, 0.1) 0%, transparent 50%) 100% 100% / 140% 140% no-repeat,
+    radial-gradient(circle at 50% 50%, rgba(244, 63, 94, 0.04) 0%, transparent 40%) 50% 50% / 100% 100% no-repeat;
+  filter: blur(40px);
+  opacity: 0.85;
+  pointer-events: none;
+  animation: auroraGlow 22s infinite alternate ease-in-out;
+}
+
+@keyframes auroraGlow {
+  0% {
+    background-position: 0% 0%, 100% 100%, 50% 50%;
+  }
+  50% {
+    background-position: 40% 90%, 10% 40%, 90% 10%;
+  }
+  100% {
+    background-position: 100% 0%, 50% 100%, 0% 50%;
+  }
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -116,6 +141,13 @@ h1, h2, h3, h4, h5, h6 {
   border: 1px solid var(--border-glass);
   box-shadow: var(--shadow-glass);
   border-radius: var(--radius-lg);
+  transition: border-color var(--transition-normal), box-shadow var(--transition-normal), transform var(--transition-normal);
+}
+
+.glass-panel:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.45), 0 0 20px rgba(255, 255, 255, 0.01);
+  transform: translateY(-2px);
 }
 
 /* Sidebar Styles */
@@ -219,9 +251,9 @@ h1, h2, h3, h4, h5, h6 {
 
 .nav-item.active {
   color: var(--text-main);
-  background: rgba(255, 255, 255, 0.06);
-  border-color: var(--border-glass-bright);
-  box-shadow: inset 4px 0 0 var(--accent-color);
+  background: linear-gradient(90deg, hsla(var(--accent-hue), 85%, 62%, 0.12) 0%, rgba(255, 255, 255, 0.01) 100%);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 4px 0 0 var(--accent-color), 0 0 20px hsla(var(--accent-hue), 85%, 62%, 0.15);
 }
 
 .nav-item.active svg {
@@ -794,16 +826,18 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .chat-bubble.user .bubble-content {
-  background: var(--accent-color);
+  background: linear-gradient(135deg, hsl(var(--accent-hue), 80%, 55%) 0%, hsl(var(--accent-hue), 70%, 45%) 100%);
   color: white;
   border-top-right-radius: 2px;
+  box-shadow: 0 4px 15px 0 hsla(var(--accent-hue), 85%, 62%, 0.25);
 }
 
 .chat-bubble.assistant .bubble-content {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border-glass);
+  background: rgba(22, 22, 40, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   color: var(--text-main);
   border-top-left-radius: 2px;
+  box-shadow: 0 4px 20px 0 rgba(0, 0, 0, 0.2);
 }
 
 /* Markdown styling inside Chat Bubbles */
@@ -1449,3 +1483,14 @@ h1, h2, h3, h4, h5, h6 {
   font-style: italic;
   color: var(--text-dim);
 }
+
+/* Spinner Animation helper */
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+

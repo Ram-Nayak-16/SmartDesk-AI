@@ -360,6 +360,7 @@ export const OllamaService = {
     messages,
     systemPrompt,
     temperature = 0.7,
+    options = {},
     isSandbox = false,
     onChunk,
     onError,
@@ -393,7 +394,8 @@ export const OllamaService = {
             messages: formattedMessages,
             stream: true,
             options: {
-              temperature: parseFloat(temperature)
+              temperature: parseFloat(temperature),
+              ...options
             }
           }),
           signal: controller.signal
@@ -418,3 +420,74 @@ export const OllamaService = {
     return () => controller.abort(); // Return cancel function
   }
 };
+
+/**
+ * Reads a streaming Response object from Ollama's chat API and decodes it chunk by chunk.
+ */
+async function handleOllamaStream(response, onChunk, onDone) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      
+      // Save last unfinished chunk back to the buffer
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const json = JSON.parse(line);
+          
+          if (json.message && json.message.content) {
+            onChunk(json.message.content);
+          }
+          
+          if (json.done) {
+            onDone({
+              totalDuration: json.total_duration,
+              loadDuration: json.load_duration,
+              promptEvalCount: json.prompt_eval_count,
+              evalCount: json.eval_count,
+              evalDuration: json.eval_duration
+            });
+            return;
+          }
+        } catch (e) {
+          console.warn("Failed to parse JSON stream line:", line, e);
+        }
+      }
+    }
+
+    // Process any remaining characters left in the buffer
+    if (buffer.trim()) {
+      try {
+        const json = JSON.parse(buffer);
+        if (json.message && json.message.content) {
+          onChunk(json.message.content);
+        }
+        if (json.done) {
+          onDone({
+            totalDuration: json.total_duration,
+            loadDuration: json.load_duration,
+            promptEvalCount: json.prompt_eval_count,
+            evalCount: json.eval_count,
+            evalDuration: json.eval_duration
+          });
+        }
+      } catch (e) {
+        console.warn("Failed to parse remaining buffer:", buffer, e);
+      }
+    }
+  } catch (err) {
+    console.error("Error reading Ollama stream:", err);
+    throw err;
+  }
+}
+
